@@ -15,7 +15,7 @@ from starlette.responses import JSONResponse
 from back.app.api.routers import main_router
 from back.app.core.config import settings
 from back.app.core.exceptions import BadRequestException, InternalServerException
-from back.app.services.cpi_parser import germany_historical_cpi_parser
+from back.app.services.cpi_parser_service import germany_historical_cpi_parser
 
 
 scheduler = AsyncIOScheduler()
@@ -28,12 +28,13 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     scheduler.add_job(
         germany_historical_cpi_parser.parse_into_mapper,
         trigger=CronTrigger(hour="*/6", minute=0, timezone="UTC"),
-        id="resign_expired_thumbnails",
+        id="refresh_cpi_data",
         replace_existing=True,
     )
     scheduler.start()
     logger.info("Scheduler started.")
     yield
+    scheduler.shutdown()
     logger.info("Application stopped.")
 
 
@@ -42,10 +43,22 @@ def _include_router(app: FastAPI) -> None:
 
 
 def _add_middleware(app: FastAPI) -> None:
-    # Add CORS middleware
+    if not settings.FRONTEND_URLS:
+        if settings.ENV == "prod":
+            raise RuntimeError("FRONTEND_URLS must be configured in production")
+
+        logger.warning(
+            "FRONTEND_URLS is not set, using dev fallback http://localhost:3000"
+        )
+        allow_origins = ["http://localhost:3000"]
+    else:
+        if "*" in settings.FRONTEND_URLS:
+            raise RuntimeError("Wildcard CORS origins are not allowed")
+        allow_origins = settings.FRONTEND_URLS
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.FRONTEND_URLS if settings.FRONTEND_URLS else ["*"],
+        allow_origins=allow_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
